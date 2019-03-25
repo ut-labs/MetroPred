@@ -14,7 +14,8 @@
 
 
 去掉[1, 5, 6, 12, 13, 19, 20] 
-2019032301 Seq2seq val:13.2 train: 10 test:  13.17
+2019032301 lstm_ly_finetune val:13.2 train: 10 test:  13.17
 
-
-
+去掉[1, 5, 6, 12, 13, 19, 20] 
+带25的
+2019032601 lstm_history_blend val:11.84 train: 10.8 test: 
