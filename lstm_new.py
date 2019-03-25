@@ -26,8 +26,8 @@ batch_size = 128
 torch.manual_seed(13)
 
 
-os.system('rm -rf lstm_boardx/*')
-writer = SummaryWriter(log_dir='lstm_boardx')
+os.system('rm -rf tb_output/liyuan/*')
+writer = SummaryWriter(log_dir='tb_output/liyuan')
 
 
 #

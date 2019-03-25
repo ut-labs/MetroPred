@@ -20,8 +20,8 @@ torch.manual_seed(13)
 
 CONTAIN_25 = 24
 
-os.system('rm -rf lstm_boardx/*')
-writer = SummaryWriter(log_dir='lstm_boardx')
+os.system('rm -rf tb_output/fangzhong/*')
+writer = SummaryWriter(log_dir='tb_output/fangzhong')
 #####################################################################################################
 dataset_path = './dataset/h_train'
 val = [24, 25]
@@ -305,7 +305,7 @@ def main():
                 return t1_str, t2_str
 
             date = '2019-01-29'
-            with open('./lstm_layers_dropout/{}-{}.csv'.format(date, epoch), 'w') as f:
+            with open('./results/lstm_layers_dropout/{}-{}.csv'.format(date, epoch), 'w') as f:
                 title = 'stationID,startTime,endTime,inNums,outNums'
                 print(title, file=f)
                 x, y, z = res.shape
