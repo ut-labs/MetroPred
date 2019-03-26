@@ -35,11 +35,10 @@ print('debug', DEBUG)
 
 
 cuda_device = torch.device('cuda:3')
-log_dir = 'hjj_results_gcn{}'.format(DEBUG)
-writer = SummaryWriter(log_dir=log_dir)
+os.system('rm -rf tb_output/hjj/*')
+writer = SummaryWriter(log_dir='tb_output/hjj')
 
 
-os.system("rm -rf {}/*".format(log_dir))
 
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-5
@@ -81,29 +80,18 @@ class GCNNet(nn.Module):
     def __init__(self, node_num):
         super(GCNNet, self).__init__()
         dim = hidden_dim
-        # 摊平全链接
-        # self.node_embedding = nn.Embedding(node_num, dim)
-        # self.node_embedding.weight.requires_grad = True
-        # self.node_embedding.cuda()
-        #
-        # self.conv1 = GCNConv(144*2, dim)
-        # self.fc = nn.Sequential(
-        #     nn.Linear(144 * 2, dim),
-        #     nn.ReLU()
-        # )
 
 
         # 搞个gru
         self.gru_encoder = nn.GRU(2, dim, bidirectional=True, batch_first=True)
         self.lstm_fc = nn.Sequential(
-            nn.Linear(dim * 2, dim),
-            nn.ReLU()
+            nn.Linear(dim * 2, dim)
         )
 
         # self.conv1 = ChebConv(dim, dim, K=10)
         # self.conv2 = ChebConv(dim, dim, K=10)
-        self.conv1 = ARMAConv(dim, dim)
-        self.conv2 = ARMAConv(dim, dim)
+        self.conv1 = ARMAConv(dim, dim, num_layers=2)
+        self.conv2 = ARMAConv(dim, dim, num_layers=2)
 
     def forward(self, graph_data, data):
         x, edge_index, edge_weight = graph_data.x, graph_data.edge_index, graph_data.edge_attr
@@ -127,10 +115,10 @@ class GCNNet(nn.Module):
         x = self.lstm_fc(h_n)
         x = x.view(-1, hidden_dim)
 
-        x = self.conv1(x, edge_index, edge_weight=edge_weight)
-        x = F.relu(x)
+        x = self.conv1(x, edge_index)
+        # x = F.relu(x)
         # x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index, edge_weight=edge_weight)
+        # x = self.conv2(x, edge_index)
 
         return x
 
@@ -161,16 +149,13 @@ class Model(nn.Module):
         ids = ids[:,0]
 
         new_x2 = network_emb[ids]
-        # print(network_embd1(torch.Tensor([0]).long().cuda()), 162) #这里的取之是一样的，loss.backward注释
+        print(network_emb[torch.Tensor([0]).long().cuda()], 162) #这里的取之是一样的，loss.backward注释
         # print(new_x2.shape)
         new_x2 = new_x2.view(new_x2.shape[0], 1, new_x2.shape[1])
         new_x2 = new_x2.repeat(1, 144, 1)
         # 50, 144, 20
-
-        # print(new_x2[2, 0, :])
-        # print(new_x2[2, 1, :])
-        # return
-        # print(new_x1.shape, new_x2.shape)
+        print(new_x2.shape)
+        print(new_x1.shape)
 
         x = torch.cat([new_x1, new_x2], dim=2)
         res = self.lstm(x)
@@ -303,8 +288,8 @@ def main():
             pred_y = model(X)
             loss = crition(pred_y, y)
             total_loss.append(loss.data.cpu().numpy())
-            loss.backward()
-            optimizer.step()
+            # loss.backward()
+            # optimizer.step()
 
         model.eval()
         val_X = val_data[:, :, :3]
@@ -347,9 +332,11 @@ def main():
 
             test_data = torch.from_numpy(test_data)
             test_data = torch.einsum("ijk->jik", test_data)
-            ids = torch.from_numpy(np.array([i for i in range(81)])).double()
-            ids = ids.repeat(144, 1)
-            ids = ids.view(81, 144, 1)
+            test_data = torch.from_numpy(test_data)
+            test_data = torch.einsum("ijk->jik", test_data)
+            ids = torch.from_numpy(np.array([np.ones(144) * i for i in range(81)])).double()
+            ds = ids.view(81, 144, 1)
+
             test_data = torch.cat([test_data, ids], dim=2).float().cuda()
 
             res = model(test_data)

@@ -238,6 +238,8 @@ def main():
         counts += 1
     avg /= counts
 
+    print(counts, 241)
+
     X = []
     for i in range(ALL_DATA - 1):
         if i + 1 in noises: continue
@@ -375,7 +377,7 @@ def main():
                 return t1_str, t2_str
 
             date = '2019-01-29'
-            with open('./{}/{}-{}.csv'.format(log_dir, date, epoch), 'w') as f:
+            with open('./results/{}/{}-{}.csv'.format(log_dir, date, epoch), 'w') as f:
                 title = 'stationID,startTime,endTime,inNums,outNums'
                 print(title, file=f)
                 x, y, z = res.shape
