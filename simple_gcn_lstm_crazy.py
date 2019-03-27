@@ -36,13 +36,14 @@ print('debug', DEBUG)
 
 cuda_device = torch.device('cuda:3')
 
-os.system('rm -rf tb_output/hjj/*')
-writer = SummaryWriter(log_dir='tb_output/hjj')
+log_dir = 'tb_output/hjj' if DEBUG else 'tb_output/hjj0'
+os.system('rm -rf {}/*'.format(log_dir))
+writer = SummaryWriter(log_dir=log_dir)
 
 
 
-LEARNING_RATE = 0.0005
-WEIGHT_DECAY = 1e-4
+LEARNING_RATE = 0.001
+WEIGHT_DECAY = 1e-5
 epochs = 2000
 batch_size = 50
 torch.manual_seed(13)
@@ -50,6 +51,7 @@ CUDA = True
 
 
 ALL_DATA = 24 if DEBUG else 25
+print(ALL_DATA)
 
 hidden_dim = 20
 #
@@ -77,9 +79,9 @@ class BiLSTM(nn.Module):
         result = self.none_linear_layer(result)
         return result
 
-class GCNNet(nn.Module):
+class GCNsNet(nn.Module):
     def __init__(self, node_num):
-        super(GCNNet, self).__init__()
+        super(GCNsNet, self).__init__()
         dim = hidden_dim
 
 
@@ -89,29 +91,34 @@ class GCNNet(nn.Module):
             nn.Linear(dim * 2, dim)
         )
 
-        self.conv1 = ChebConv(dim, dim, K=15)
+        # self.gcn_lists = [ARMAConv(dim, dim, num_layers=2) for _ in range(32)]
+        self.gcn_lists = [GCNConv(dim, dim) for _ in range(32)]
+
+        for i, conv in enumerate(self.gcn_lists):
+            self.add_module('amram_conv{}'.format(i), conv)
+
+        # self.w = nn.Parameter(torch.ones(32, 1))
+        self.fc = nn.Sequential(
+            nn.Linear(32*dim, dim)
+        )
+        # self.conv1 = ChebConv(dim, dim, K=10)
         # self.conv2 = ChebConv(dim, dim, K=10)
         # self.conv1 = ARMAConv(dim, dim, num_layers=2)
         # self.conv2 = ARMAConv(dim, dim, num_layers=2)
-        # self.conv1 = GCNConv(dim, dim)
-        self.conv2 = GCNConv(dim, dim)
 
-    def forward(self, graph_data, data):
-        x, edge_index, edge_weight = graph_data.x, graph_data.edge_index, graph_data.edge_attr
-        # lstm
-        ids = data[:, 0 ,2].view(-1).long()
-        # # print(ids.shape)
-        add_x = torch.Tensor(x.cpu().numpy()).cuda()
-        # # print(add_x.shape)
-        add_x[ids, :, :] = data[:, :, :2]
-        x = (x + add_x)/2
+    def forward(self, graph_data, graph_adj):
+        x, edge_index = graph_data.x, graph_data.edge_index
 
+        adj_lists = []
+        g = graph_adj
+        for i in range(32):
+            rows, cols = g.nonzero()
+            rows = rows.reshape(-1)
+            cols = cols.reshape(-1)
+            edge_index = torch.tensor([rows, cols], dtype=torch.long).cuda()
+            adj_lists.append(edge_index)
+            g = g.dot(graph_adj)
 
-        edge_index = edge_index.long()
-        #
-        # x = x.long()
-        # x = self.node_embedding(x)
-        # x = self.fc(x)
 
         _, h_n = self.gru_encoder(x)
         h_n = h_n.view(h_n.shape[1], -1)
@@ -119,28 +126,35 @@ class GCNNet(nn.Module):
         x = self.lstm_fc(h_n)
         x = x.view(-1, hidden_dim)
 
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
+        results = []
+        for conv, edge_index in zip(self.gcn_lists, adj_lists):
+            x_1 = conv(x, edge_index)
+            results.append(x_1)
+
+        x = torch.cat(results, dim=1)
+        x = self.fc(x)
+        # x = F.relu(x)
         # x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index)
+        # x = self.conv2(x, edge_index)
 
         return x
 
 
 class Model(nn.Module):
-    def __init__(self, graph_data):
+    def __init__(self, graph_data, graph_adj):
         super(Model, self).__init__()
         self.lstm = BiLSTM()
-        self.gcn = GCNNet(81)
+        self.gcn = GCNsNet(81)
         self.graph_data = graph_data
         self.fc = nn.Sequential(
             nn.Linear(2, hidden_dim)
         )
+        self.graph_adj = graph_adj
 
     def forward(self, data):
         # data bs * 144, 3
 
-        network_emb = self.gcn(self.graph_data, data)
+        network_emb = self.gcn(self.graph_data, self.graph_adj)
         # print(network_emb.shape)
         # print(network_emb[0], 151)
         # assert  network_emb.shape == (81, hidden_dim)
@@ -220,8 +234,10 @@ def main():
         counts += 1
     avg /= counts
 
-    print(counts)
+    print(counts, 235)
+
     X = []
+
     for i in range(ALL_DATA - 1):
         if i + 1 in noises: continue
         if i + 2 in noises: continue
@@ -229,7 +245,6 @@ def main():
         b = datas[i + 1]
         c = torch.cat((a, b), dim=2)
         X.append(c)
-        # for j in range(2, 8):
         j = 8
         if i + j < 23 and (i+j+1) not in noises:
             a = datas[i]
@@ -238,34 +253,21 @@ def main():
             X.append(c)
 
     graph = read_graph_csv()
-    # graph_floyd = read_graph_csv('./maps/graph_floyd.csv')
+    graph_floyd = read_graph_csv('./maps/graph_floyd.csv')
 
     graph_floyd = np.load('./hjj_maps/avg_25.npy')
-
-    # graph = graph_floyd
-    # np.fill_diagonal(graph_floyd, 0)
-    # print(graph_floyd)
-    # b = graph_floyd / graph_floyd.sum(axis=1)
-    # print(b)
-    # c = np.zeros((81, 81))
-    # c[b > 0.01] = 1
-    # graph = c
-    # print(graph)
-    # print(graph.sum())
 
     rows, cols = graph.nonzero()
     rows = rows.reshape(-1)
     cols = cols.reshape(-1)
 
     edge_index = torch.tensor([rows, cols], dtype=torch.float).cuda()
-    edge_weight = torch.from_numpy(graph_floyd[rows, cols]).float().cuda()
-
 
     # x = torch.tensor([i for i in range(81)], dtype=torch.float).cuda()
     #  x就得修改
     x = avg.cuda()
 
-    graph_data = geoData(x, edge_index=edge_index, edge_attr=edge_weight)
+    graph_data = geoData(x, edge_index=edge_index)
 
     all_data = torch.cat(X, dim=0).float().cuda()
 
@@ -281,11 +283,13 @@ def main():
         shuffle = True,
         num_workers= 0
     )
-    model = Model(graph_data)
+    model = Model(graph_data, graph)
+
+    print(model.eval())
+    # print(avg[0])
     model.cuda()
 
     crition = nn.L1Loss()
-    # crition = F.mse_loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     for epoch in range(epochs):
@@ -305,7 +309,6 @@ def main():
             # return 0
             pred_y = model(X)
             loss = crition(pred_y, y)
-            # loss1 = F.mse_loss(pred_y, y)
             total_loss.append(loss.data.cpu().numpy())
             loss.backward()
             optimizer.step()
@@ -325,7 +328,7 @@ def main():
         train_loss = np.mean(total_loss)
         val_loss = val_loss.data.cpu().numpy().mean()
         print("Epoch", epoch, 'train loss:', train_loss)
-        print("Epoch", epoch, 'validation loss:', val_loss_sklearn)
+        print("Epoch", epoch, 'validation loss:', val_loss)
         print("Epoch", epoch, 'avg loss:', np.mean(avg_loss))
         print(time.time() - time1)
         writer.add_scalars("scalar/loss", {'train_loss': train_loss}, epoch)
@@ -334,11 +337,8 @@ def main():
         writer.add_scalars("scalar/loss", {'13.5': 13.5}, epoch)
         writer.add_scalars("scalar/loss", {'13.3': 13.3}, epoch)
         writer.add_scalars("scalar/loss", {'13.1': 13.1}, epoch)
-        writer.add_scalars("scalar/loss", {'12': 12}, epoch)
-        writer.add_scalars("scalar/loss", {'11': 11}, epoch)
-        writer.add_scalars("scalar/loss", {'10': 10}, epoch)
 
-        if epoch % 20 == 0 and not DEBUG:
+        if epoch % 10 == 0 and not DEBUG:
             fpath = os.path.join(dataset_path, '28.npy')
             test_data = np.load(fpath)
 
@@ -350,7 +350,6 @@ def main():
             # ids = ids.repeat(144, 1)
             # ids = ids.view(81, 144, 1)
             # data = torch.cat([data, ids], dim=2)
-
 
             test_data = torch.from_numpy(test_data)
             test_data = torch.einsum("ijk->jik", test_data)
