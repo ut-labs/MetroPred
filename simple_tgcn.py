@@ -13,13 +13,14 @@ import scipy.sparse as sp
 
 cuda_device = torch.device('cuda:3')
 
-CONTAIN_25 = 24
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 0.000
-epochs = 1001
+CONTAIN_25 = 25
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 1e-5
+epochs = 8001
 batch_size = 32
 torch.manual_seed(13)
-DIM = 512
+
+DIM = 128
 
 os.system('rm -rf tb_output/fz/*')
 writer = SummaryWriter(log_dir='tb_output/fz')
@@ -65,6 +66,8 @@ class GC(nn.Module):
         self.bias = torch.nn.Parameter(torch.FloatTensor(self.output_size))
 
         stdv = 1. / math.sqrt(self.weights.size(1))
+        #torch.nn.init.kaiming_normal_(self.weights.data)
+        #torch.nn.init.kaiming_normal_(self.bias.data)
         self.weights.data.uniform_(-stdv, stdv)
         self.bias.data.uniform_(-stdv, stdv)
 
@@ -113,6 +116,38 @@ class TgcnCell(nn.Module):
         new_h = u * state + (1-u) * c
         return new_h, new_h
 
+class WeatherEmbedding(nn.Module):
+    def __init__(self, dim):
+        super(WeatherEmbedding, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(4, dim),
+        )
+    
+    def forward(self, x):
+        # x.shape = (?, 4)
+        return self.fc(x)
+
+class BiLSTM(nn.Module):
+    def __init__(self, dim=100, dim_in=81):
+        super(BiLSTM, self).__init__()
+        bidirectional = True
+        linear_dim = dim * 2 if bidirectional else dim
+        self.rnn = nn.LSTM(dim_in, dim,
+                           num_layers = 2,
+                           batch_first=True,
+                           bidirectional=bidirectional,
+                           dropout=0.2
+                  )
+
+        self.none_linear_layer = nn.Sequential(
+            nn.Linear(linear_dim, 2 * 81),
+            nn.ReLU()
+        )
+
+    def forward(self, data):
+        result, _ = self.rnn(data)
+        result = self.none_linear_layer(result)
+        return result
 
 class Model(nn.Module):
     def __init__(self, adj):
@@ -122,45 +157,62 @@ class Model(nn.Module):
         self.rnn = TgcnCell(2, DIM, adj, 81)
         #self.rnn2 = TgcnCell(DIM, DIM, adj, 81)
 
-        self.weights = torch.nn.Parameter(torch.FloatTensor(DIM, 144))
+        self.weights = torch.nn.Parameter(torch.FloatTensor(DIM, 288))
         stdv = 1. / math.sqrt(self.weights.size(1))
         self.weights.data.uniform_(-stdv, stdv)
-        '''
-        self.out_layer = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(DIM, 288),
-            nn.ReLU()
-        )
-        '''
+        #torch.nn.init.kaiming_normal_(self.weights.data)
+        # KaiMing
 
-    def forward(self, inputs):
-        #inputs: bs * 144 * 81
+        self.wthr_embedding = WeatherEmbedding(DIM)
+        #self.lstm = BiLSTM(dim = 128, dim_in=81)
+
+        self.avg_w = torch.nn.Parameter(torch.FloatTensor(144, 2))
+        stdv = 1. / math.sqrt(self.avg_w.size(1))
+        self.avg_w.data = torch.ones(144,2).float().cuda(cuda_device)
+        
+        #torch.nn.init.kaiming_normal_(self.avg_w)
+
+    def forward(self, inputs, weather, avg, blend):
+        #inputs: bs * 144 * 81 * 2
+        #weather: bs * 4
+        #avg: 144 * 81 * 2
+
+        #wthr_embed = self.wthr_embedding(weather).view(-1, 1, DIM) # bs * dim
+        #wthr_embed = wthr_embed.repeat(1, 81, 1)
 
         states = torch.zeros(inputs.shape[0], 81 * DIM).float().cuda(cuda_device)
         for i in range(144):
-            output, states = self.rnn(inputs[:,i,:], states)
-            # output: bs * 81 * dim
-            #output, states = self.rnn2(output, states)
+            output, states = self.rnn(inputs[:,i,:,:], states)         
         
         last_output = output
         last_output = last_output.view(-1, 81, DIM)
+        #print(last_output.shape)
+        #print(wthr_embed.shape)
+        #last_output = last_output.matmul(self.weights) # -1, 81, 288
+        #last_output = torch.cat((last_output, wthr_embed), dim = 2)
+        last_output = last_output.matmul(self.weights) # -1, 81, 288
         
-        last_output = last_output.matmul(self.weights) # -1, 81, 144
-        last_output = last_output.view(-1, 81, 144, 1)
-        last_output = torch.einsum('ijkl->ikjl', last_output)
-        last_output = F.relu(last_output)
-        '''
-        last_output = self.out_layer(last_output)
         last_output = last_output.view(-1, 81, 144, 2)
-        last_output = torch.einsum('ijkl->ikjl', last_output)
-        '''
-        return last_output
+        last_output = F.relu(last_output)
+        
+        if blend:
+            result = last_output*(1-self.avg_w) + avg*self.avg_w
+        else:
+            result = last_output
+        
+        result = torch.einsum('ijkl->ikjl', result)
+        return result
+
+dataset_path = './dataset/h_train'
+weathers = np.load('./weather/wthr.npy')
 
 def get_datas():
-    dataset_path = './dataset/h_train'
+    
     val = [24, 25]
     datas = []
     noises = [1, 5, 6, 12, 13, 19, 20]
+
+    
 
     for i in range(25):
         fpath = os.path.join(dataset_path, '{}.npy'.format(i + 1))
@@ -168,28 +220,48 @@ def get_datas():
         data = torch.from_numpy(data)
         data = data.view(1, 144, 81, 2)
         datas.append(data)
+        if i >= 20:
+            datas.append(data)
+    ###########################################################################
+    avg = np.zeros((144, 81, 2))
+    tot = 0
+    for i in range(21, CONTAIN_25 + 1):
+        if i in noises: continue
+        fpath = os.path.join(dataset_path, '{}.npy'.format(i))
+        data = np.load(fpath)
+        avg += data
+        tot += 1
+    avg /= tot
+    avg = torch.from_numpy(avg).float().cuda(cuda_device)
+    avg = torch.einsum('ijk->jik', avg)
+    
 
     X = []
+    W = []
     for i in range(CONTAIN_25 - 1):
         if i + 1 in noises: continue
         if i + 2 in noises: continue
         a = datas[i]
-        for j in [1, 8, 15, 22]:
+        for j in [1]:#, 8, 15, 22]:
             if i + j > CONTAIN_25: break
             b = datas[i + j]
+            wh = torch.from_numpy(weathers[i+j]).view(1, 4)
             c = torch.cat((a, b), dim=3)
             print('(',i,',',i + j,')')
             X.append(c)
+            W.append(wh)
     print('total data: ', len(X))
     all_data = torch.cat(X, dim=0).float().cuda(cuda_device)
+    all_wea = torch.cat(W, dim=0).float().cuda(cuda_device)
 
     a = datas[val[0] - 1]
     b = datas[val[1] - 1]
     val_data = torch.cat((a, b), dim=3).float().cuda(cuda_device)
+    val_wea = torch.from_numpy(weathers[val[1] - 1]).view(1, 4).float().cuda(cuda_device)
+    return all_data, val_data, all_wea, val_wea, avg
 
-    return all_data, val_data
 
-def read_graph_csv(fpath='./maps/graph.csv'):
+def read_graph_csv(fpath='./maps/graph_floyd.csv'):
     datas = []
     with open(fpath) as f:
         for line in f.readlines():
@@ -201,9 +273,9 @@ def read_graph_csv(fpath='./maps/graph.csv'):
 
 def main():
 
-    train_data, val_data = get_datas()
+    train_data, val_data, train_wthr, val_wea, avg = get_datas()
 
-    torch_dataset = Data.TensorDataset(train_data[:,:,:,:2], train_data[:,:,:,2:3])
+    torch_dataset = Data.TensorDataset(train_data[:,:,:,:2], train_data[:,:,:,2:3], train_wthr)
     loader = Data.DataLoader(
         dataset = torch_dataset,
         batch_size = batch_size,
@@ -223,7 +295,8 @@ def main():
     model = Model(adj)
     model.cuda(cuda_device)
 
-    crition = nn.L1Loss()
+    cri_tri = nn.MSELoss()
+    cri_val = nn.L1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     for epoch in range(epochs):
@@ -232,13 +305,13 @@ def main():
 
         model.train()
 
-        for step, (batch_x, batch_y) in enumerate(loader):
+        for step, (batch_x, batch_y, batch_w) in enumerate(loader):
             optimizer.zero_grad()
 
             X = batch_x
             y = batch_y
-            pred_y = model(X)
-            loss = crition(pred_y, y)
+            pred_y = model(X, batch_w, avg, True)
+            loss = cri_tri(pred_y, y)
             total_loss.append(loss.data.cpu().numpy())
             loss.backward()
             optimizer.step()
@@ -246,8 +319,9 @@ def main():
         model.eval()
         val_X = val_data[:,:,:,:2]
         val_y = val_data[:,:,:,2:3]
-        pred_y = model(val_X)
-        val_loss = crition(pred_y, val_y)
+        
+        pred_y = model(val_X, val_wea, avg, True)
+        val_loss = cri_val(pred_y, val_y)
         a = pred_y.data.cpu().numpy().reshape(1, -1)
         b = val_y.data.cpu().numpy().reshape(1, -1)
 
@@ -262,6 +336,39 @@ def main():
         writer.add_scalars("scalar/loss", {'13.5': 13.5}, epoch)
         writer.add_scalars("scalar/loss", {'13.3': 13.3}, epoch)
         writer.add_scalars("scalar/loss", {'13.1': 13.1}, epoch)
+
+        if epoch % 100 == 0:
+            fpath = os.path.join(dataset_path, '28.npy')
+            test_data = np.load(fpath)
+
+            test_data = torch.from_numpy(test_data).view(1, 144, 81, 2).float().cuda(cuda_device)
+            
+            
+            wea = torch.from_numpy(weathers[29 - 1]).view(1, 4).float().cuda(cuda_device)
+            res = model(test_data, wea, avg, True)
+            res = res.view(144, 81, 2)
+            res = res.data.cpu().numpy()
+
+            def time2str(id, date):
+                dt = datetime.datetime.strptime(date, "%Y-%m-%d")
+                t1 = time.mktime(dt.timetuple()) + int(id) * 10 * 60
+                t2 = t1 + 10 * 60
+                t1_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t1))
+                t2_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t2))
+
+                return t1_str, t2_str
+
+            date = '2019-01-29'
+            with open('./results/fz_tgcn/{}-{}.csv'.format(date, epoch), 'w') as f:
+                title = 'stationID,startTime,endTime,inNums,outNums'
+                print(title, file=f)
+                x, y, z = res.shape
+                print('------------', res[0][0], '----------------')
+                for j in range(y):
+                    for i in range(x):
+                        t1, t2 = time2str(i, date)
+                        out_num, in_num = res[i][j]  # 0出，1进
+                        print(j, t1, t2, in_num, out_num, sep=',', file=f)
 
 
 if __name__ == '__main__':

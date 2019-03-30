@@ -21,6 +21,7 @@ from sklearn.metrics import mean_absolute_error
 
 
 
+### 一天一记
 ## 换掉gcn
 
 parser = argparse.ArgumentParser()
@@ -37,18 +38,20 @@ print('debug', DEBUG)
 cuda_device = torch.device('cuda:3')
 
 now = int(time.time())
-log_dir = 'tb_output/hjj/{}'.format(now) if DEBUG else 'tb_output/hjj0/{}'.format(now)
+# log_dir = 'tb_output/hjj/{}'.format(now) if DEBUG else 'tb_output/hjj0/{}'.format(now)
+log_dir = 'tb_output/hjj/1' if DEBUG else 'tb_output/hjj0/1'
 # os.system('rm -rf {}/*'.format(log_dir))
 writer = SummaryWriter(log_dir=log_dir)
 
 
 
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 1e-5
-epochs = 2000
-batch_size = 50
-torch.manual_seed(13)
+LEARNING_RATE = 0.0005
+WEIGHT_DECAY = 1e-4
+epochs = 3001
+batch_size = 81
+torch.manual_seed(23)
 CUDA = True
+C = 1
 
 
 ALL_DATA = 24 if DEBUG else 25
@@ -69,11 +72,12 @@ class BiLSTM(nn.Module):
                   )
 
         self.none_linear_layer = nn.Sequential(
-            nn.Linear(linear_dim, 50),
+            nn.Linear(linear_dim, 20),
             nn.ReLU(),
-            nn.Linear(50, 2),
+            nn.Linear(20, 20),
             nn.ReLU()
         )
+
 
     def forward(self, data):
         result, _ = self.rnn(data)
@@ -129,16 +133,20 @@ class GCNsNet(nn.Module):
     def forward(self, graph_data, graph_adj, now_data):
         x, edge_index = graph_data.x, graph_data.edge_index
 
-        # ids = now_data[:, 0, 2].view(-1).long()
-        # add_x = torch.Tensor(x.cpu().numpy()).cuda()
-        # # # print(add_x.shape)
-        # add_x[ids, :, :] = now_data[:, :, :2]
-        # x = (x + add_x) / 2
+
+        ids = now_data[:, 0, 2].view(-1).long()
+        add_x = torch.Tensor(x.cpu().numpy()).cuda()
+        # # print(add_x.shape)
+        assert now_data.shape[0] == 81
+        add_x[ids, :, :] = now_data[:, :, :2]
+        x = (x + add_x * C ) / (1 + C)
 
         adj_lists = []
         g = graph_adj
         for i in range(32):
-            rows, cols = g.nonzero()
+            non_diag = g
+            np.fill_diagonal(non_diag, 0)
+            rows, cols = non_diag.nonzero()
             rows = rows.reshape(-1)
             cols = cols.reshape(-1)
             edge_index = torch.tensor([rows, cols], dtype=torch.long).cuda()
@@ -153,7 +161,10 @@ class GCNsNet(nn.Module):
         x = x.view(-1, hidden_dim)
 
         results = []
+        index = 0
         for conv, edge_index in zip(self.gcn_lists, adj_lists):
+            index += 1
+            # print(edge_index, index, 160)
             x_1 = conv(x, edge_index)
             results.append(x_1)
 
@@ -173,9 +184,15 @@ class Model(nn.Module):
         self.gcn = GCNsNet(81)
         self.graph_data = graph_data
         self.fc = nn.Sequential(
-            nn.Linear(2, hidden_dim)
+            nn.Linear(2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
         )
         self.graph_adj = graph_adj
+        self.fc3 = nn.Sequential(
+            nn.Linear(40, 2),
+            nn.ReLU()
+        )
 
     def forward(self, data):
         # data bs * 144, 3
@@ -204,7 +221,11 @@ class Model(nn.Module):
         x = torch.cat([new_x1, new_x2], dim=2)
         res = self.lstm(x)
 
-        return res
+        res2 = torch.cat([res, new_x2], dim=2)
+
+        res3 = self.fc3(res2)
+
+        return res3
 
 
 
@@ -251,6 +272,12 @@ def main():
 
     avg = torch.zeros(81, 144, 2, dtype=torch.float)
     counts = 0
+
+    data_28_path = os.path.join(dataset_path, '{}.npy'.format(28))
+    data_28 = np.load(data_28_path)
+    data_28 = torch.from_numpy(data_28)
+    data_28 = torch.einsum("ijk->jik", data_28)
+
     # 将均值搞成节点属性
     for i in range(20, ALL_DATA - 1):
         if i + 1 in noises:
@@ -258,6 +285,8 @@ def main():
         item = datas[i]
         avg += item[:, :, 0: 2].float()
         counts += 1
+    avg += data_28[:, :, 0: 2].float()
+    counts += 1
 
     avg /= counts
 
@@ -272,12 +301,12 @@ def main():
         b = datas[i + 1]
         c = torch.cat((a, b), dim=2)
         X.append(c)
-        j = 8
-        if i + j < 23 and (i+j+1) not in noises:
-            a = datas[i]
-            b = datas[i + j]
-            c = torch.cat((a, b), dim=2)
-            X.append(c)
+        # j = 8
+        # if i + j < 23 and (i+j+1) not in noises:
+        #     a = datas[i]
+        #     b = datas[i + j]
+        #     c = torch.cat((a, b), dim=2)
+        #     X.append(c)
 
     graph = read_graph_csv()
     graph_floyd = read_graph_csv('./maps/graph_floyd.csv')
@@ -290,7 +319,6 @@ def main():
 
     edge_index = torch.tensor([rows, cols], dtype=torch.float).cuda()
 
-    # x = torch.tensor([i for i in range(81)], dtype=torch.float).cuda()
     #  x就得修改
     x = avg.cuda()
 
@@ -303,13 +331,7 @@ def main():
     val_data = torch.cat((a, b), dim=2).float().cuda()
 
 
-    torch_dataset = Data.TensorDataset(all_data[:,:,:3], all_data[:,:, 3:5])
-    loader = Data.DataLoader(
-        dataset = torch_dataset,
-        batch_size = batch_size,
-        shuffle = True,
-        num_workers= 0
-    )
+
     model = Model(graph_data, graph)
 
     print(model.eval())
@@ -317,27 +339,43 @@ def main():
     model.cuda()
 
     crition = nn.L1Loss()
+    crition2 = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
+    assert all_data.shape[0] % 81 == 0, '一天81个站点'
+
+    data_number =all_data.shape[0] // 81
+
+    print(data_number,  )
     for epoch in range(epochs):
         total_loss = []
         time1 = time.time()
 
+        ids = np.arange(data_number)
+        np.random.shuffle(ids)
         model.train()
-        # model.eval()
 
-        for step, (batch_x, batch_y) in enumerate(loader):
+        for i in ids:
             optimizer.zero_grad()
 
+            batch_x = all_data[i*81: (i+1)*81, :, :3]
+            batch_y = all_data[i*81: (i+1)*81, :, 3:]
+
             X = batch_x
-            y = batch_y[:, :, :]
+            y = batch_y[:, :, :2]
             # print(X[0, 1, 2])
             # print(X[0, 2, 2])
             # return 0
+            assert batch_x[-1, 1, 2] == 80
+            assert batch_y[-1, 1, 2] == 80
+
             pred_y = model(X)
+            # print(y.shape, pred_y.shape)
+
             loss = crition(pred_y, y)
+            loss1 = crition2(pred_y, y)
             total_loss.append(loss.data.cpu().numpy())
-            loss.backward()
+            loss1.backward()
             optimizer.step()
 
         model.eval()
@@ -365,7 +403,7 @@ def main():
         writer.add_scalars("scalar/loss", {'13.3': 13.3}, epoch)
         writer.add_scalars("scalar/loss", {'13.1': 13.1}, epoch)
 
-        if epoch % 10 == 0 and not DEBUG:
+        if epoch % 100 == 0 and not DEBUG:
             fpath = os.path.join(dataset_path, '28.npy')
             test_data = np.load(fpath)
 
@@ -390,7 +428,9 @@ def main():
                 return t1_str, t2_str
 
             date = '2019-01-29'
-            with open('./results/hjj_gcn_lstm_crazy/{}-{}.csv'.format(date, epoch), 'w') as f:
+            filename = __file__
+            filename = filename.replace('.py', '')
+            with open('./results/hjj_gcn_lstm_crazy_2019-03-29/{}-{}.csv'.format(filename, epoch), 'w') as f:
                 title = 'stationID,startTime,endTime,inNums,outNums'
                 print(title, file=f)
                 x, y, z = res.shape
