@@ -35,11 +35,11 @@ DEBUG = args.debug
 print('debug', DEBUG)
 
 
-cuda_device = torch.device('cuda:3')
+cuda_device = torch.device('cuda:2')
 
 now = int(time.time())
 # log_dir = 'tb_output/hjj/{}'.format(now) if DEBUG else 'tb_output/hjj0/{}'.format(now)
-log_dir = 'tb_output/hjj/1weekend' if DEBUG else 'tb_output/hjj0/1weekend'
+log_dir = 'tb_output/hjj/map_all' if DEBUG else 'tb_output/hjj/map_all'
 # os.system('rm -rf {}/*'.format(log_dir))
 writer = SummaryWriter(log_dir=log_dir)
 
@@ -47,14 +47,14 @@ writer = SummaryWriter(log_dir=log_dir)
 
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4
-epochs = 3001
+epochs = 10001
 batch_size = 81
 torch.manual_seed(13)
 CUDA = True
 C = 1
 
 
-ALL_DATA = 24 if DEBUG else 25
+ALL_DATA = 26
 print(ALL_DATA)
 
 hidden_dim = 20
@@ -77,7 +77,6 @@ class BiLSTM(nn.Module):
             nn.Linear(20, 20),
             nn.ReLU()
         )
-
 
     def forward(self, data):
         result, _ = self.rnn(data)
@@ -243,15 +242,14 @@ def read_graph_csv(fpath='./maps/graph.csv'):
 def main():
     dataset_path = './dataset/h_train'
 
-    val = [24, 25]
+    val = [19, 20]
 
     datas = []
 
 
-    noises = [1, 5, 6, 12, 13, 19, 20]
-    noises2 = [5, 6, 12, 13, 19, 20]
+    noises = [1, 5, 6, 12, 13, 19, 20, 26]
 
-    for i in range(25):
+    for i in range(26):
         fpath = os.path.join(dataset_path, '{}.npy'.format(i + 1))
         data = np.load(fpath)
         #  144 * 81 * 2
@@ -273,13 +271,17 @@ def main():
     avg = torch.zeros(81, 144, 2, dtype=torch.float)
     counts = 0
     # 将均值搞成节点属性
-    for i in range(20, ALL_DATA - 1):
-        if i + 1 in noises:
-            continue
+    for i in range(26):
+        #if i + 1 in noises:
+        #    continue
         item = datas[i]
         avg += item[:, :, 0: 2].float()
         counts += 1
-
+    day_28 = np.load(os.path.join(dataset_path, '28.npy'))
+    day_28 = torch.from_numpy(day_28).float()
+    day_28 = torch.einsum("ijk->jik", day_28)
+    avg += day_28
+    counts += 1
     avg /= counts
 
     print(counts, 235)
@@ -287,7 +289,8 @@ def main():
     X = []
 
     ## 因为noise是日期，所以需要都+1判断
-    for i in range(ALL_DATA - 1):
+    for i in range(25):
+        #if i == 19: continue #### Debug
         if i + 1 in noises:
             if i+2 in noises:
                 print(i, i+1)
@@ -410,7 +413,7 @@ def main():
         writer.add_scalars("scalar/loss", {'13.1': 13.1}, epoch)
 
         if epoch % 100 == 0 and not DEBUG:
-            fpath = os.path.join(dataset_path, '28.npy')
+            fpath = os.path.join(dataset_path, '26.npy')
             test_data = np.load(fpath)
 
             test_data = torch.from_numpy(test_data)
@@ -433,10 +436,12 @@ def main():
 
                 return t1_str, t2_str
 
-            date = '2019-01-29'
+            date = '2019-01-27'
             filename = __file__
             filename = filename.replace('.py', '')
-            with open('./results/hjj_gcn_lstm_crazy_addweekend_2019-03-30/{}-{}.csv'.format(filename, epoch), 'w') as f:
+            if not os.path.exists('./results/hjj_map_all'):
+                os.mkdir('./results/hjj_map_all')
+            with open('./results/hjj_map_all/{}-{}.csv'.format(filename, epoch), 'w') as f:
                 title = 'stationID,startTime,endTime,inNums,outNums'
                 print(title, file=f)
                 x, y, z = res.shape

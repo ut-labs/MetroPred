@@ -20,6 +20,7 @@ def main():
         print(fname)
         #
         fpath = os.path.join(dirname, fname)
+        fpath = './dataset/ori26.csv'
         df = pd.read_csv(fpath)
 
         df['ts'] = df['time'].apply(lambda x: timestr2group(x) // (10 * 60))
@@ -28,7 +29,9 @@ def main():
 
         for (k1, k2, k3), group in tt.iteritems():
             data[k1][k2][k3] = group
-        np.save('./dataset/h_train/{}.npy'.format(index + 1), data)
+        #np.save('./dataset/h_train/{}.npy'.format(index + 1), data)
+        np.save('./dataset/h_train/26.npy', data)
+        return
 
 
 def test_data_extract():
@@ -52,6 +55,6 @@ def get_avg_map():
     np.save('./hjj_maps/avg_25.npy', maps)
 
 if __name__ == '__main__':
-    # main()
+    main()
     # test_data_extract()
-    get_avg_map()
+    #get_avg_map()

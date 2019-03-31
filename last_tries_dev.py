@@ -35,9 +35,11 @@ DEBUG = args.debug
 print('debug', DEBUG)
 
 
+cuda_device = torch.device('cuda:2')
+
 now = int(time.time())
 # log_dir = 'tb_output/hjj/{}'.format(now) if DEBUG else 'tb_output/hjj0/{}'.format(now)
-log_dir = 'tb_output/hjj/map_all_res_dev' if DEBUG else 'tb_output/hjj/map_all_res_dev'
+log_dir = 'tb_output/fz/last-dev' if DEBUG else 'tb_output/fz/last-dev'
 # os.system('rm -rf {}/*'.format(log_dir))
 writer = SummaryWriter(log_dir=log_dir)
 
@@ -187,7 +189,8 @@ class Model(nn.Module):
         )
         self.graph_adj = graph_adj
         self.fc3 = nn.Sequential(
-            nn.Linear(40, 2)
+            nn.Linear(40, 2),
+            nn.ReLU()
         )
 
     def forward(self, data):
@@ -290,7 +293,7 @@ def main():
         if i + 1 == 19:
             continue #### Debug
         if i + 1 in noises:
-            if i+2 in noises:
+            if i + 2 in noises:
                 print(i, i+1)
                 a = datas[i]
                 b = datas[i + 1]
@@ -376,8 +379,7 @@ def main():
             assert batch_x[-1, 1, 2] == 80
             assert batch_y[-1, 1, 2] == 80
 
-            pred_y = model(X) + batch_x[:, :, :2]
-            pred_y = F.relu(pred_y)
+            pred_y = model(X)
             # print(y.shape, pred_y.shape)
 
             loss = crition(pred_y, y)
@@ -390,8 +392,7 @@ def main():
         val_X = val_data[:, :, :3]
         val_y = val_data[:, :, 3:5]
         # print(val_y.shape)
-        pred_y = model(val_X) + val_X[:, :, :2]
-        pred_y = F.relu(pred_y)
+        pred_y = model(val_X)
         # print(pred_y.shape, val_y.shape)
         val_loss = crition(pred_y, val_y)
         a = pred_y.data.cpu().numpy().reshape(1, -1)
@@ -423,12 +424,9 @@ def main():
 
             test_data = torch.cat([test_data, ids], dim=2).float().cuda()
 
-            res = model(test_data) + test_data[:, : , :2]
-            res = F.relu(res)
-
+            res = model(test_data)
             res = torch.einsum('ijk->jik', res)
             res = res.data.cpu().numpy()
-
 
             def time2str(id, date):
                 dt = datetime.datetime.strptime(date, "%Y-%m-%d")
@@ -442,9 +440,9 @@ def main():
             date = '2019-01-27'
             filename = __file__
             filename = filename.replace('.py', '')
-            if not os.path.exists('./results/hjj_map_all_res'):
-                os.mkdir('./results/hjj_map_all_res')
-            with open('./results/hjj_map_all_res/{}-{}.csv'.format(filename, epoch), 'w') as f:
+            if not os.path.exists('./results/hjj_map_all123'):
+                os.mkdir('./results/hjj_map_all123')
+            with open('./results/hjj_map_all123/{}-{}.csv'.format(filename, epoch), 'w') as f:
                 title = 'stationID,startTime,endTime,inNums,outNums'
                 print(title, file=f)
                 x, y, z = res.shape
